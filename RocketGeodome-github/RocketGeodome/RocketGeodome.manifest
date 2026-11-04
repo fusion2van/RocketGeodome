@@ -1,0 +1,13 @@
+{
+	"autodeskProduct": "Fusion",
+	"type": "addin",
+	"id": "3b8f6e2a-9c41-4d7e-b5a2-6f1e0c9d8a73",
+	"author": "Alexander",
+	"description": {
+		"": "Rocket Geodome v1.0: geodesic dome frames from CNC plywood (2V / 4V / 6V; hemisphere, on walls, arches on legs), sheet layout and DXF"
+	},
+	"version": "1.0.0",
+	"runOnStartup": true,
+	"supportedOS": "windows|mac",
+	"editEnabled": true
+}
