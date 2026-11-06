@@ -423,7 +423,7 @@ class Dome:
     def set_floor(self, z_floor):
         p = self.p
         self.z_floor = z_floor
-        self.h_total = p.R + p.plate - z_floor
+        self.h_total = p.R - z_floor    # the recessed outer plate finishes at the node surface
         self.h_clear = p.R - p.frame_depth - p.plate - z_floor
 
     @property
@@ -514,6 +514,8 @@ def _validate(p):
                      ("Tenon length", p.tenon_len)):
         if v <= 0:
             e.append("{} must be greater than 0.".format(label))
+    if p.frame_depth <= p.plate:
+        e.append("Frame depth must be greater than plate thickness for a recessed hub.")
     if p.boards_per_strut == 2:
         if p.board_gap <= 0:
             e.append("Board gap must be greater than 0.")
@@ -832,9 +834,9 @@ def analyze(src):
         d.plate_edge = far + p.plate_margin
         d.plate_size = 2.0 * math.hypot(d.plate_edge, a_half + p.plate_margin)
 
-    # per strut type: the board is straight. Its outer edge runs from shoulder to
-    # shoulder (the outer plate sits on the shoulders), its inner edge clears the
-    # whole inner plate and meets it just past the plate edge (x1).
+    # The outer surface of each board reaches the outer plate's new, flush face.
+    # At each hub, a full-depth shoulder relief clears the recessed plate until
+    # just past its footprint (x1). The inner edge remains unchanged.
     x1 = d.plate_edge + d.transition
     for ti, (L, phi_p, phi_q, sphere, members, sock) in enumerate(clusters):
         kind = 'dome' if sphere else ('leg' if d.shape == 'Arches' else 'wall')
@@ -1071,6 +1073,8 @@ _RU_PATTERNS = [
     (r"Model scale must be 1 or more\.", "Масштаб — 1 или больше."),
     (r"Frame depth \+ plate thickness must be less than the radius\.",
      "Глубина каркаса + толщина пластины должны быть меньше радиуса."),
+    (r"Frame depth must be greater than plate thickness for a recessed hub\.",
+     "Глубина каркаса должна быть больше толщины пластины для утопленного узла."),
     (r"Board gap too small: web between twin slots (.+) mm < min web (.+) mm\.",
      "Зазор между досками мал: перемычка между пазами {0} мм < {1} мм."),
     (r"Spacer too low: frame depth minus insets leaves no room for its tenons\.",
@@ -1275,22 +1279,24 @@ def _bridge(left, right, below):
 def _end_points(d, t, end):
     """Key points of one board end in board coordinates: x along the outer chord
     from its midpoint, y outwards, outer chord at y = 0.
-    A = outer: tenon end, tenon tip, shoulder (where the outer plate sits).
-    B = inner: tenon end, tenon tip, corner where the tenon side meets the
-    straight inner edge. Between the two ends both edges are straight."""
+    A = outer: tenon end and tip, recessed root and pocket floor, pocket exit
+    at the outer board edge. The plate now occupies tau = [-tp, 0], so its
+    outside face is flush with the board's edge at the pocket exit.
+    B = inner: unchanged tenon end, tip, and inner-edge corner."""
     p = d.p
     tp, r, h = p.plate, d.r_node, p.frame_depth
     mu = r + p.tenon_len
+    pocket_end = d.plate_edge + d.transition
     at = _end_at(t, end)
     s, c = (math.sin(t.half_angle), math.cos(t.half_angle)) if end == 0 else (math.sin(t.phi_q), math.cos(t.phi_q))
     half = t.chord_out / 2.0 if end == 1 else -t.chord_out / 2.0
     sg = 1.0 if end == 1 else -1.0
 
-    def tau_on(y0, k):   # where the tenon side (mu = r + Lt) meets the edge y = y0 + k x
-        return (y0 + k * (half - sg * mu * c) - mu * s) / (c - sg * k * s)
-    tau_out = tau_on(t.y_out, t.k_out)
-    A = [at(tp, r), at(tp, mu), at(0.0, mu) if abs(tau_out) < 1e-9 else at(tau_out, mu)]
-    B = [at(-h - tp, r), at(-h - tp, mu), at(tau_on(t.y_in, t.k_in), mu)]
+    def tau_on(y0, k, radial):  # where a constant-mu line meets y = y0 + k*x
+        return (y0 + k * (half - sg * radial * c) - radial * s) / (c - sg * k * s)
+    A = [at(0.0, r), at(0.0, mu), at(-tp, mu), at(-tp, pocket_end),
+         at(tau_on(t.y_out, t.k_out, pocket_end), pocket_end)]
+    B = [at(-h - tp, r), at(-h - tp, mu), at(tau_on(t.y_in, t.k_in, mu), mu)]
     return A, B, at
 
 
@@ -1301,8 +1307,9 @@ def _board_points(d, ti):
 
 def _shape_type(d, t, x1, strut=None):
     """Edges, middle zone, size and spacers of a strut type's straight board.
-    The outer edge joins the two shoulders; the inner edge joins the points just
-    past the inner plates (x1 from the hub axis), so it clears both plates.
+    The outer edge joins the two pocket exits beyond the recessed outer plates;
+    the inner edge joins the points just past the inner plates (x1 from the hub
+    axis), so it clears both plates.
     A leg's long side (socket type) is a bar parallel to its chord: tenons at the
     hub, a square end in the foot platform socket (strut = one such strut)."""
     p = d.p
@@ -1311,11 +1318,10 @@ def _shape_type(d, t, x1, strut=None):
     if t.socket:
         _socket_type(d, t, x1, strut)
         return
-    # each plate covers the board from the shoulder (mu) to just past its edge (x1):
-    # the outer edge passes under both points of each outer plate, the inner edge
-    # over both points of each inner plate (on the sphere: shoulder to shoulder,
-    # and through the points just past the inner plates, as before)
-    t.y_out, t.k_out = _bridge([at_p(0.0, mu), at_p(0.0, x1)], [at_q(0.0, mu), at_q(0.0, x1)], True)
+    # Outside the recessed shoulders, the straight outer edge meets the face
+    # of each outer plate at tau=0, immediately beyond its footprint (x1).
+    # The relief between mu and x1 is generated by _end_points.
+    t.y_out, t.k_out = _line(at_p(0.0, x1), at_q(0.0, x1))
     t.y_in, t.k_in = _bridge([at_p(-h, x1), at_p(-h, mu)], [at_q(-h, x1), at_q(-h, mu)], False)
     t.x_lo = max(at_p(-h, x1)[0], at_p(0.0, x1)[0])
     t.x_hi = min(at_q(-h, x1)[0], at_q(0.0, x1)[0])
@@ -1338,7 +1344,7 @@ def _socket_type(d, t, x1, strut):
     p = d.p
     mu, h, c, wall = d.r_node + p.tenon_len, p.frame_depth, p.clearance, p.plate
     at_p = _end_at(t, 0)
-    t.y_out, t.k_out = min(at_p(0.0, mu)[1], at_p(0.0, x1)[1]), 0.0
+    t.y_out, t.k_out = at_p(0.0, x1)[1], 0.0
     t.y_in, t.k_in = max(at_p(-h, x1)[1], at_p(-h, mu)[1]), 0.0
     a, b, _ti = strut
     ex, ey, ez = d.strut_frame(a, b)
@@ -1412,7 +1418,7 @@ def board_geometry(d, ti, stub=False):
     if t.socket and not stub:         # a leg's long side: square end in the foot platform socket
         xc = t.x_cut
         pts = A + [(xc, t.yo(xc)), (xc, t.yi(xc))] + B[::-1]
-        dogs = [False, False, True, False, False, True, False, False]
+        dogs = [False, False, True, True, False, False, False, True, False, False]
         k = t.spacers_each
         span = t.middle_len / (k + 1)
         xs = [x0 + i * span for i in range(1, k + 1)]
@@ -1422,14 +1428,15 @@ def board_geometry(d, ti, stub=False):
     elif stub:
         x_cut = x0 + d.stub_middle
         pts = A + [(x_cut, t.yo(x_cut)), (x_cut, t.yi(x_cut))] + B[::-1]
-        dogs = [False, False, True, False, False, True, False, False]
+        dogs = [False, False, True, True, False, False, False, True, False, False]
         xs = [x0 + d.stub_spacer] if p.boards_per_strut == 2 else []
         lo = xs[0] + half_slot + 0.2 * p.label_height if xs else x0
         label_x = (lo + x_cut) / 2.0
     else:
         A2, B2, _at2 = _end_points(d, t, 1)
         pts = A + A2[::-1] + B2 + B[::-1]
-        dogs = [False, False, True, True, False, False, False, False, True, True, False, False]
+        dogs = [False, False, True, True, False, False, True, True, False, False,
+                False, False, True, True, False, False]
         k = t.spacers_each
         span = t.middle_len / (k + 1)
         xs = [x0 + i * span for i in range(1, k + 1)]
@@ -1615,7 +1622,7 @@ def tube_geometry(d):
     p = d.p
     r_in = p.center_hole / 2.0
     return {'loops': [[('C', (0.0, 0.0), r_in + TUBE_WALL)], [('C', (0.0, 0.0), r_in)]], 'labels': [],
-            'thickness': p.frame_depth - p.clearance, 'grain': 'any'}
+            'thickness': p.frame_depth - p.plate - p.clearance, 'grain': 'any'}
 
 
 # ----------------------------------------------------------- foot platform
@@ -1779,14 +1786,16 @@ def board_frame(d, a, b, ti, offset):
 
 
 def plate_frame(d, n, inner=False):
-    """Outer plate: z outwards from N_out. Inner plate: mirrored, z towards the
-    centre from N_in, so its engraved +z face is the visible inner face."""
+    """Outer plate: its origin is tp inward of N_out; +z extrusion finishes at
+    N_out. Inner plate: mirrored, z towards the centre from N_in, so its
+    engraved +z face is the visible inner face."""
     ax = d.axis[n]
     e1 = _ref_dir(ax, d.base[n])
     e2 = _cross(ax, e1)
     if inner:
         return d.inner(n), e1, _mul(e2, -1.0), _mul(ax, -1.0)
-    return d.pos[n], e1, e2, ax
+    # Plate occupies tau [-tp, 0], not [0, tp]. Its outside face is at N_out.
+    return _sub(d.pos[n], _mul(ax, d.p.plate)), e1, e2, ax
 
 
 def tube_frame(d, n):
@@ -1839,7 +1848,8 @@ def test_hub_node(d):
 
 def tenon_fit(d):
     """Worst deviation (mm) of any tenon from its ideal seat: footprint inside a
-    plate slot with clearance c on every side, height exactly t_p (flush)."""
+    plate slot with clearance c on every side, height exactly t_p. The
+    outer tenon now runs from tau=-tp (root) to tau=0 (flush face)."""
     p = d.p
     worst = 0.0
     plates = {}
@@ -1850,7 +1860,7 @@ def tenon_fit(d):
             if end == 1 and d.types[ti].socket:
                 continue
             at = _end_at(d.types[ti], end)
-            quads.append((node, False, [at(tp, r), at(tp, r + Lt), at(0.0, r + Lt), at(0.0, r)]))
+            quads.append((node, False, [at(0.0, r), at(0.0, r + Lt), at(-tp, r + Lt), at(-tp, r)]))
             quads.append((node, True, [at(-h - tp, r), at(-h - tp, r + Lt), at(-h, r + Lt), at(-h, r)]))
         for off in p.board_offsets():
             o, ex, ey, ez = board_frame(d, a, b, ti, off)
@@ -2043,16 +2053,17 @@ def bom(d):
     if d.has_tubes:
         L, W, A = part_size(tube_geometry(d))
         rows.append(dict(type='T', part='Tube', qty=nn, length=L, width=W,
-                         thickness=p.frame_depth - p.clearance, area=A, note='printed, between the plates'))
+                         thickness=p.frame_depth - p.plate - p.clearance, area=A, note='printed, between the plates'))
     m = bolt_size(p.center_hole) if p.center_hole > 0 else None
     if m:
         ms = '{:g}'.format(m)
-        need = p.frame_depth + 2.0 * p.plate + 1.7 * m      # nut, washers and a few threads
+        need = p.frame_depth + p.plate + 1.7 * m             # recessed outer plate, inner plate, hardware
         bolt = next((b for b in BOLT_LENGTHS if b >= need), int(math.ceil(need / 10.0) * 10))
         hardware = [('M{}x{}'.format(ms, bolt), nn, bolt, 'bolt, min length {:.0f} mm'.format(need)),
                     ('M{} nut'.format(ms), nn, 0, ''), ('M{} washer'.format(ms), 2 * nn, 0, '')]
         if not d.has_tubes:
-            hardware.append(('Tube L{:.0f}'.format(p.frame_depth), nn, p.frame_depth,
+            tube_len = p.frame_depth - p.plate
+            hardware.append(('Tube L{:.0f}'.format(tube_len), nn, tube_len,
                              'between the plates, inner diameter >= {:g} mm'.format(p.center_hole + 1.0)))
         for typ, q, length, note in hardware:
             rows.append(dict(type=typ, part='Hardware', qty=q, length=length, width=0.0, thickness=0.0,

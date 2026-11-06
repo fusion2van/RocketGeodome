@@ -119,9 +119,9 @@ TEXT = {
                 'Print bed size in Y. P2S: 256 mm.'),
     'diameter': ('Диаметр (Diameter)',
                  'Диаметр купола по наружным узлам — точкам, где рёбра сходятся снаружи. Наружные '
-                 'пластины выступают ещё на свою толщину.',
+                 'пластины утоплены заподлицо с рёбрами.',
                  'Dome diameter at the outer nodes, the points where the struts meet on the outside. '
-                 'The outer plates stick out by their own thickness on top of that.'),
+                 'The outer plates are recessed flush with the struts.'),
     'frequency': ('Частота (Frequency)',
                   'На сколько частей делится каждое ребро икосаэдра. Чем больше частота, тем больше '
                   'деталей, но они короче, а купол круглее.',
@@ -154,10 +154,10 @@ TEXT = {
                    '0 means auto: 1.3 x the cap edge, as on the photo, the hubs stay small. Longer legs make '
                    'taller arches but bigger hubs (you get a warning). The feet stand in platforms.'),
     'frame_depth': ('Глубина каркаса (Frame depth)',
-                    'Расстояние между наружной и внутренней пластинами узла по радиусу — высота рёбер. '
-                    'Для дома бери толщину утеплителя.',
-                    'Radial distance between the outer and inner hub plates, i.e. the strut depth. '
-                    'For a house use the insulation thickness.'),
+                    'Радиальная высота ребра от наружного узла до внутренней линии каркаса. '
+                    'Наружная пластина утоплена в ребро. Для дома бери толщину утеплителя.',
+                    'Radial strut depth from the outer node to the inner frame line. '
+                    'The outer plate is recessed into the strut. For a house use the insulation thickness.'),
     'boards_per_strut': ('Досок в ребре (Boards per strut)',
                          '1 — ребро из одной доски. 2 — сдвоенное ребро: две доски с зазором, '
                          'между ними проставки.',

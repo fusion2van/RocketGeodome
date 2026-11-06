@@ -50,10 +50,10 @@ for f, e in EXPECT.items():
         print("    {} {:.5f} x{:3d}  chord {:6.1f}  board {:6.1f} x {:5.1f}  middle {:6.1f}  spacers/strut {}".format(
             t.letter, t.factor, t.count, t.chord_out, t.board_len, t.board_wid, t.middle_len, t.spacers_each))
 
-# heights for the defaults (spec: w 66, floor 33 mm below, H_total 3051, H_clear 2865)
+# heights for the defaults (recessed outer plate is flush at R, floor 33 mm below)
 d = core.analyze(core.Params())
 check(abs(d.z_floor + 33.0) < 1e-9, "floor {}".format(d.z_floor))
-check(abs(d.h_total - 3051.0) < 1e-9, "H_total {}".format(d.h_total))
+check(abs(d.h_total - 3033.0) < 1e-9, "H_total {}".format(d.h_total))
 check(abs(d.h_clear - 2865.0) < 1e-9, "H_clear {}".format(d.h_clear))
 check(d.n_spacers == 250, "4V spacers {}".format(d.n_spacers))
 
@@ -153,13 +153,17 @@ labels = [core.plate_geometry(m, k)["labels"] for k in range(m.n_nodes)]
 check(all(len(lb) == 1 for lb in labels), "model plates carry only their code")
 rows = core.bom(m)
 types = [r["type"] for r in rows]
-check("T" in types and "M3x30" in types and "Tube L15" not in " ".join(types), "model BOM {}".format(types))
+check("T" in types and "M3x25" in types and "Tube L15" not in " ".join(types), "model BOM {}".format(types))
 check(abs(core.frame_weight(rows, m.density) * 1000.0 - 612) < 15, "model PLA grams")
 check("Model 1:10" in core.summary_html(m), "model summary")
 csv = core.bom_csv(m, rows)
 check("g PLA" in csv and csv.count("\r\n") == len(rows) + 2, "model csv")
 tf = core.tube_frame(m, 0)
 check(abs(math.dist(tf[0], (0, 0, 0)) - (m.p.R - m.p.frame_depth + m.p.clearance / 2)) < 1e-9, "tube between the plates")
+check(abs(core.tube_geometry(m)['thickness'] - (m.p.frame_depth - m.p.plate - m.p.clearance)) < 1e-9,
+      "recessed hub tube length")
+check(any("recessed hub" in err for err in core.analyze(core.Params(frame_depth=10, plate=18)).errors),
+      "recess frame depth validation")
 # a real dome is not touched by the print values
 r1 = core.analyze(core.Params(print_plywood=7, print_hole=0, bed_len=10))
 r0 = core.analyze(core.Params())
@@ -168,8 +172,8 @@ check(not core.analyze(core.Params(model_scale=10)).errors, "6 m 4V model 1:10")
 bad = core.analyze(core.Params(model_scale=10, print_plywood=0))
 check(any("Print board thickness" in e for e in bad.errors), "print thickness validation")
 
-# straight boards: both edges straight, the outer plate sits on the shoulders, the
-# board never cuts into either plate, the letter sits in the middle when it can
+# Straight boards: the outer edge meets the recessed outer plate at the pocket
+# exit (tau = 0), the pocket clears the plate, and the inner edge is unchanged.
 for kw in (dict(), dict(frequency=2), dict(frequency=6), dict(boards_per_strut=1),
            dict(diameter=3000, frequency=2, model_scale=10), dict(plate_shape="Circle")):
     d = core.analyze(core.Params(**kw))
@@ -180,38 +184,56 @@ for kw in (dict(), dict(frequency=2), dict(frequency=6), dict(boards_per_strut=1
         x1 = d.plate_edge + d.transition
         for i in range(41):
             mu = d.r_node + p.tenon_len + (x1 - d.r_node - p.tenon_len) * i / 40.0
-            lam_out = (t.y_out + p.R * c - mu * s) / c          # outer edge point at this mu
             lam_in = (t.y_in + p.R * c - mu * s) / c
-            worst_out = max(worst_out, lam_out - p.R)            # > 0 would cut into the outer plate
             worst_in = max(worst_in, (p.R - p.frame_depth) - lam_in)
         A, B, at = core._board_points(d, ti)
-        check(abs(A[2][1] - t.y_out) < 1e-9 and abs(B[2][1] - t.y_in) < 1e-9, "edges through the corners {}".format(kw))
+        check(abs(A[4][1] - t.yo(A[4][0])) < 1e-9 and abs(B[2][1] - t.yi(B[2][0])) < 1e-9,
+              "edges through the corners {}".format(kw))
+        for end in ((0,) if t.socket else (0, 1)):
+            A_end, _B_end, at_end = core._end_points(d, t, end)
+            target = [at_end(0.0, d.r_node), at_end(0.0, d.r_node + p.tenon_len),
+                      at_end(-p.plate, d.r_node + p.tenon_len), at_end(-p.plate, x1), at_end(0.0, x1)]
+            worst_out = max(worst_out, *(math.dist(u, v) for u, v in zip(A_end, target)))
+        # Both outer plate faces are exactly at the node surface, not raised by tp.
+        n = d.struts[0][0]
+        pf = core.plate_frame(d, n, False)
+        outer_face = tuple(pf[0][j] + p.plate * pf[3][j] for j in range(3))
+        worst_out = max(worst_out, math.dist(outer_face, d.pos[n]))
         geo = core.board_geometry(d, ti)
         outline = core._loop_points(geo["loops"][0])
-        check(sum(1 for q in outline if abs(q[1] - t.y_out) < 1e-9) >= 2, "outer edge straight {}".format(kw))
+        check(sum(1 for q in outline if abs(q[1] - t.yo(q[0])) < 1e-9) >= 2,
+              "outer edge straight {}".format(kw))
         lab = geo["labels"][0]
         check(abs(lab[2] - (t.y_out + t.y_in) / 2.0) < 1e-9, "label on the centre line {}".format(kw))
         if not any(abs(x) < 1e-9 for x in geo["spacers_x"]):
             check(abs(lab[1]) < 1e-9, "label in the middle {} {}".format(kw, lab))
-    check(worst_out < 1e-9, "board cuts into the outer plate {} by {:.3g}".format(kw, worst_out))
+    check(worst_out < 1e-9, "recess and plate face alignment {} dev {:.3g}".format(kw, worst_out))
     check(worst_in < 1e-9, "board cuts into the inner plate {} by {:.3g}".format(kw, worst_in))
 
 # v0.6 base shapes: hemisphere on straight walls, arches on legs
 def plate_intrusion(d):
-    """Worst cut (mm) of any board edge into a plate, on both ends of every type."""
+    """Worst mismatch at pocket/plate boundaries, plus inner-plate intrusion.
+
+    The outside edge before the pocket exit is deliberately recessed and must
+    not be evaluated using the extrapolated straight edge from the middle.
+    """
     p = d.p
     mu0, x1 = d.r_node + p.tenon_len, d.plate_edge + d.transition
     worst = 0.0
     for t in d.types:
         for end in ((0,) if t.socket else (0, 1)):      # a leg's foot end has no plates
+            A, B, at = core._end_points(d, t, end)
+            for q, expected in zip(A, (at(0, d.r_node), at(0, mu0), at(-p.plate, mu0),
+                                       at(-p.plate, x1), at(0, x1))):
+                worst = max(worst, math.dist(q, expected))
             phi = t.half_angle if end == 0 else t.phi_q
             s, c = math.sin(phi), math.cos(phi)
             sg = 1.0 if end == 1 else -1.0
             for i in range(41):
                 mu = mu0 + (x1 - mu0) * i / 40.0
-                for (y0, k), limit, out in (((t.y_out, t.k_out), 0.0, True), ((t.y_in, t.k_in), -p.frame_depth, False)):
-                    tau = (y0 + k * (sg * t.chord_out / 2.0 - sg * mu * c) - mu * s) / (c - sg * k * s)
-                    worst = max(worst, tau - limit if out else limit - tau)
+                # Inner-plate placement is unchanged.
+                tau = (t.y_in + t.k_in * (sg * t.chord_out / 2.0 - sg * mu * c) - mu * s) / (c - sg * t.k_in * s)
+                worst = max(worst, -p.frame_depth - tau)
     return worst
 
 
@@ -260,7 +282,7 @@ for kw, e in SHAPES:
           tag + " counts {} {} {} {}".format(d.n_nodes, d.n_base, d.n_struts, len(d.types)))
     floor = e["floor"] if e["floor"] is not None else d.platform["z_floor"]
     check(abs(d.z_floor - floor) < 1e-9, tag + " floor {}".format(d.z_floor))
-    check(abs(d.h_total - (d.p.R + d.p.plate - floor)) < 1e-9, tag + " height")
+    check(abs(d.h_total - (d.p.R - floor)) < 1e-9, tag + " height")
     check(core.tenon_fit(d) < 1e-6, tag + " tenon fit {:.3g}".format(core.tenon_fit(d)))
     check(plate_intrusion(d) < 1e-9, tag + " board cuts into a plate by {:.3g}".format(plate_intrusion(d)))
     if d.feet:      # the boards stand in the platforms, the platforms on the floor
